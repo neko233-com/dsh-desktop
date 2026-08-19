@@ -31,7 +31,7 @@ function Get-AssetUrlList {
 }
 
 function Install-BundledNodeRuntime([string]$Destination) {
-    $version = "v22.19.0"
+    $version = "v24.19.0"
     $nodeAsset = "node-$version-win-x64.zip"
     $nodeArchive = Join-Path $temp $nodeAsset
     $nodeUrls = @()
@@ -53,14 +53,19 @@ function Install-BundledNodeRuntime([string]$Destination) {
     $nodeExtract = Join-Path $temp "node-runtime"
     Expand-Archive -LiteralPath $nodeArchive -DestinationPath $nodeExtract -Force
     $nodeRoot = Join-Path $nodeExtract "node-$version-win-x64"
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
     Copy-Item -Path (Join-Path $nodeRoot "*") -Destination $Destination -Recurse -Force
+    $node = Join-Path $Destination "node.exe"
+    if ((& $node --version).Trim() -ne $version) { throw "内置 Node.js 版本校验失败" }
 }
 
 function Install-FromSource {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw "未找到 git，无法源码构建" }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw "未找到 Rust/cargo；请安装 rustup 后重试" }
-    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw "未找到 pnpm；请先安装 Node.js 22+ 并启用 Corepack" }
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw "未找到 pnpm；请先安装 Node.js 24+ 并启用 Corepack" }
     $source = Join-Path $temp "source"
     $cloneUrl = Convert-ToMirrorUrl "https://github.com/$repo.git"
     git clone --depth 1 $cloneUrl $source
@@ -113,7 +118,12 @@ try {
             $copyArgs = @((Join-Path $frontend "dsh-web-ui"), (Join-Path $InstallDir "frontend\dsh-web-ui"), "/E", "/XD", "node_modules", ".pnpm-store", "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
             robocopy @copyArgs | Out-Null
             if ($LASTEXITCODE -gt 7) { throw "复制内置 frontend 失败：$LASTEXITCODE" }
-            Copy-Item -LiteralPath (Join-Path $extract "runtime\node") -Destination (Join-Path $InstallDir "runtime\node") -Recurse -Force
+            $runtimeDestination = Join-Path $InstallDir "runtime\node"
+            if (Test-Path -LiteralPath $runtimeDestination) {
+                Remove-Item -LiteralPath $runtimeDestination -Recurse -Force
+            }
+            Copy-Item -LiteralPath (Join-Path $extract "runtime\node") -Destination $runtimeDestination -Recurse -Force
+            if ((& (Join-Path $runtimeDestination "node.exe") --version).Trim() -ne "v24.19.0") { throw "发布包 Node.js 版本校验失败" }
         } else {
             throw "没有可用发布包。请改用 -FromSource，或设置 DSH_DESKTOP_MIRROR。"
         }

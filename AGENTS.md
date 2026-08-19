@@ -22,7 +22,7 @@
 - `frontend/dsh-web-ui` 是本仓库维护的完整源码副本，不得改回 Git submodule、远程源码导入或运行时 `@linxin666/dsh-web-ui-all@latest`。
 - 桌面启动只能链接 `frontend/dsh-web-ui` 的本地构建产物；官方 DeepSeek Harness 可以按官方方式由 `dsh`/`npx` 启动。
 - 前端更新入口不属于本产品运行时；修改源码后必须在本地 `pnpm build`，发布工作流必须把 `frontend` 一起打包。
-- 发布包必须自带 Node.js 22 运行时；首次启动自动启用 Corepack/pnpm，并通过 `@deepseek-ai/dsh@latest` 准备 Harness。不得把“用户自行安装 Harness/Node/pnpm”作为正常使用前置条件。
+- 发布包必须自带 Node.js 24 LTS 运行时；首次启动自动启用 Corepack/pnpm，并通过 `@deepseek-ai/dsh@latest` 准备 Harness。不得把“用户自行安装 Harness/Node/pnpm”作为正常使用前置条件。
 
 ## 强制验证
 

@@ -76,7 +76,7 @@ def main() -> None:
         "iconutil",
         "AppIcon.icns",
         "runtime/node",
-        "v22.19.0",
+        "v24.19.0",
     )
     require_text("scripts/install.ps1", "Install-BundledNodeRuntime", "runtime\\node", "DSH_DESKTOP_MIRROR")
     require_text("scripts/install.sh", "runtime/node", "Node.js")

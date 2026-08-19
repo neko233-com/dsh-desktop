@@ -17,7 +17,7 @@ jobs:
           python-version: "3.x"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
       - run: corepack enable
       - run: pnpm --dir frontend/dsh-web-ui install --frozen-lockfile --config.minimumReleaseAge=0
       - run: pnpm --dir frontend/dsh-web-ui build
@@ -35,7 +35,7 @@ jobs:
           $copyArgs = @("frontend", "dist/frontend", "/E", "/XD", "node_modules", ".pnpm-store", "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
           robocopy @copyArgs | Out-Null
           if ($LASTEXITCODE -gt 7) { throw "复制内置 frontend 失败：$LASTEXITCODE" }
-          $nodeVersion = "v22.19.0"
+          $nodeVersion = "v24.19.0"
           $nodeArchive = Join-Path $env:RUNNER_TEMP "node-$nodeVersion-win-x64.zip"
           Invoke-WebRequest "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip" -OutFile $nodeArchive
           Expand-Archive -LiteralPath $nodeArchive -DestinationPath $env:RUNNER_TEMP/node-runtime -Force
@@ -58,7 +58,7 @@ jobs:
           python-version: "3.x"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
       - run: corepack enable
       - run: pnpm --dir frontend/dsh-web-ui install --frozen-lockfile --config.minimumReleaseAge=0
       - run: pnpm --dir frontend/dsh-web-ui build
@@ -74,7 +74,7 @@ jobs:
           mkdir -p "$APP/Contents/Resources"
           mkdir -p "$APP/Contents/Resources/frontend"
           rsync -a --exclude node_modules --exclude .pnpm-store frontend/ "$APP/Contents/Resources/frontend/"
-          NODE_VERSION="v22.19.0"
+          NODE_VERSION="v24.19.0"
           curl -fL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-darwin-arm64.tar.gz" -o "$RUNNER_TEMP/node-runtime.tar.gz"
           mkdir -p "$RUNNER_TEMP/node-runtime"
           tar -xzf "$RUNNER_TEMP/node-runtime.tar.gz" -C "$RUNNER_TEMP/node-runtime"

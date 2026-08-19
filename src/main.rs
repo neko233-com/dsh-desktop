@@ -85,6 +85,7 @@ enum UserEvent {
     WindowMaximize,
     WindowClose,
     WindowDrag,
+    RetryRuntime,
     ProcessStarted(Child),
     ServiceReady(String),
     StartupFailed(String),
@@ -157,7 +158,36 @@ impl AppState {
     fn show_error(&mut self, message: &str) {
         self.stop_child();
         self.started = false;
+        self.current_url = None;
         self.set_status("启动失败", message);
+        self.show_runtime_error(message);
+    }
+
+    fn show_runtime_error(&self, message: &str) {
+        let message = serde_json::to_string(message).unwrap_or_else(|_| "\"未知错误\"".to_string());
+        let script = format!(
+            r#"
+(() => {{
+  const message = {message};
+  const id = 'dsh-desktop-runtime-error';
+  let panel = document.getElementById(id);
+  if (!panel) {{
+    panel = document.createElement('div');
+    panel.id = id;
+    panel.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:24px;background:rgba(8,11,18,.82);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f7f8fb;';
+    panel.innerHTML = '<div data-card style="width:min(560px,100%);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:24px;background:#111723;box-shadow:0 24px 80px rgba(0,0,0,.45)"><div style="font-size:22px;font-weight:750">工作台没有启动</div><div data-message style="margin-top:12px;color:#aab5c8;line-height:1.7;word-break:break-word"></div><div style="display:flex;gap:10px;margin-top:24px"><button data-retry style="border:0;border-radius:12px;padding:12px 18px;color:#071116;background:#8af6e0;font:inherit;font-weight:750;cursor:pointer">重新连接</button><button data-settings style="border:0;border-radius:12px;padding:12px 18px;color:#dce5f4;background:#ffffff12;font:inherit;font-weight:650;cursor:pointer">返回设置</button></div></div>';
+    (document.body || document.documentElement).appendChild(panel);
+    panel.querySelector('[data-retry]').onclick = () => window.ipc && window.ipc.postMessage(JSON.stringify({{type:'retry'}}));
+    panel.querySelector('[data-settings]').onclick = () => window.ipc && window.ipc.postMessage(JSON.stringify({{type:'reset_key'}}));
+  }}
+  panel.querySelector('[data-message]').textContent = message;
+}})();
+"#,
+            message = message
+        );
+        if let Some(webview) = &self.webview {
+            let _ = webview.evaluate_script(&script);
+        }
     }
 
     fn stop_child(&mut self) {
@@ -213,6 +243,9 @@ impl ApplicationHandler<UserEvent> for AppState {
                     }
                     "reset_key" => {
                         let _ = proxy.send_event(UserEvent::ResetApiKey);
+                    }
+                    "retry" => {
+                        let _ = proxy.send_event(UserEvent::RetryRuntime);
                     }
                     "pet_visibility" => {
                         if let Some(hidden) = message.hidden {
@@ -303,6 +336,16 @@ impl ApplicationHandler<UserEvent> for AppState {
                 self.started = false;
                 self.current_url = None;
                 if let Some(webview) = &self.webview {
+                    let _ = webview.load_html(START_HTML);
+                }
+            }
+            UserEvent::RetryRuntime => {
+                if self.started {
+                    return;
+                }
+                if let Some(key) = load_api_key() {
+                    self.start_runtime(key, load_model(&self.data_dir));
+                } else if let Some(webview) = &self.webview {
                     let _ = webview.load_html(START_HTML);
                 }
             }
@@ -1078,13 +1121,23 @@ fn wait_for_http(port: u16, timeout: Duration) -> bool {
             let _ =
                 stream.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
             let mut buffer = [0_u8; 256];
-            if stream.read(&mut buffer).unwrap_or(0) > 0 {
+            let size = stream.read(&mut buffer).unwrap_or(0);
+            if http_response_is_success(&buffer[..size]) {
                 return true;
             }
         }
         thread::sleep(Duration::from_millis(250));
     }
     false
+}
+
+fn http_response_is_success(response: &[u8]) -> bool {
+    String::from_utf8_lossy(response)
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .map(|status| status.starts_with('2'))
+        .unwrap_or(false)
 }
 
 fn spawn_log_reader<R: Read + Send + 'static>(
@@ -1119,7 +1172,7 @@ fn log_bytes(data_dir: &Path, stream_name: &str, bytes: &[u8], key: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_api_key;
+    use super::{http_response_is_success, validate_api_key};
 
     #[test]
     fn validates_key_shape_without_requiring_prefix() {
@@ -1132,5 +1185,13 @@ mod tests {
     #[test]
     fn redact_does_not_echo_key() {
         assert_eq!("hello sk-secret".replace("sk-secret", "***"), "hello ***");
+    }
+
+    #[test]
+    fn only_accepts_successful_http_boot_response() {
+        assert!(http_response_is_success(b"HTTP/1.1 200 OK\r\n"));
+        assert!(http_response_is_success(b"HTTP/1.1 204 No Content\r\n"));
+        assert!(!http_response_is_success(b"HTTP/1.1 404 Not Found\r\n"));
+        assert!(!http_response_is_success(b"not an http response"));
     }
 }
