@@ -47,7 +47,7 @@ DSH_DESKTOP_MIRROR=https://ghfast.top/ curl -fsSL https://raw.githubusercontent.
 
 ## 无边框原生窗口
 
-桌面窗口不使用 Windows 系统标题栏，右上角提供苹果式三色控制：红色关闭、黄色最小化、绿色最大化；「设置」中提供 API Key 重设和宠物显示/隐藏。设置页的「获取 API Key」会调用本机默认浏览器打开 `https://platform.deepseek.com/api_keys`。
+桌面窗口不使用系统标题栏，右上角提供易懂的 Windows 风格控制：`—` 最小化、`□` 最大化、`×` 关闭；「设置」中提供 API Key 重设和宠物显示/隐藏。设置页的「获取 API Key」会调用本机默认浏览器打开 `https://platform.deepseek.com/api_keys`。
 
 ## 开发
 

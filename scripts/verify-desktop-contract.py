@@ -47,6 +47,7 @@ def main() -> None:
         require_file(path)
 
     require_text("src/main.rs", ".with_decorations(false)", "with_window_icon", "load_api_key", "WINDOW_CHROME_SCRIPT")
+    require_text("assets/window-chrome.js", 'title="最小化"', 'title="最大化"', 'title="关闭"')
     require_text("assets/start.html", "api-key", "save_key")
     require_text(".github/workflows/release.yml", "scripts/generate-icons.py", "iconutil", "AppIcon.icns")
     verify_png("assets/icons/icon-master.png")

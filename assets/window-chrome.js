@@ -17,14 +17,13 @@
         .brand { position: relative; display: flex; align-items: center; gap: 8px; letter-spacing: .01em; opacity: .82; pointer-events: none; }
         .brand-mark { width: 8px; height: 8px; border-radius: 50%; background: #83f4df; box-shadow: 0 0 14px #83f4df; }
         .actions { position: relative; display: flex; align-items: center; gap: 8px; pointer-events: auto; }
-        .settings { border: 1px solid rgba(138,246,224,.18); border-radius: 999px; padding: 7px 11px; color: #dffefa; background: rgba(13,29,39,.72); box-shadow: 0 8px 24px rgba(0,0,0,.14); backdrop-filter: blur(18px); font: 600 11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; cursor: pointer; }
+        .settings { border: 1px solid rgba(138,246,224,.18); border-radius: 8px; padding: 6px 11px; color: #dffefa; background: rgba(13,29,39,.72); box-shadow: 0 8px 24px rgba(0,0,0,.14); backdrop-filter: blur(18px); font: 600 11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; cursor: pointer; }
         .settings:hover { background: rgba(36,67,77,.9); }
-        .lights { display: flex; gap: 7px; padding: 7px 9px; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(9,15,25,.72); box-shadow: 0 8px 24px rgba(0,0,0,.2); backdrop-filter: blur(18px); }
-        .light { width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; box-shadow: inset 0 1px rgba(255,255,255,.35), 0 0 0 1px rgba(0,0,0,.18); }
-        .light:hover { filter: brightness(1.18); transform: scale(1.08); }
-        .close { background: #ff625d; }
-        .minimize { background: #ffbd44; }
-        .maximize { background: #28c840; }
+        .lights { display: flex; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(9,15,25,.78); box-shadow: 0 8px 24px rgba(0,0,0,.2); backdrop-filter: blur(18px); }
+        .light { width: 36px; height: 30px; padding: 0; border: 0; border-left: 1px solid rgba(255,255,255,.08); color: #bdc9d9; background: transparent; cursor: pointer; font: 400 16px/1 "Segoe UI Symbol","Segoe UI",sans-serif; }
+        .light:first-child { border-left: 0; }
+        .light:hover { color: #fff; background: rgba(255,255,255,.12); }
+        .close:hover { background: #c42b38; }
         .panel { position: fixed; top: 52px; right: 16px; width: 286px; padding: 16px; border: 1px solid rgba(138,246,224,.2); border-radius: 18px; color: #dce8f6; background: rgba(13,23,34,.94); box-shadow: 0 22px 60px rgba(0,0,0,.35); backdrop-filter: blur(24px); pointer-events: auto; }
         .panel[hidden] { display: none; }
         .panel h2 { margin: 0 0 13px; color: #f7fbff; font-size: 15px; }
@@ -47,9 +46,9 @@
         <div class="actions">
           <button class="settings" type="button" data-settings>设置</button>
           <div class="lights" aria-label="窗口控制">
-            <button class="light close" type="button" data-window="close" aria-label="关闭"></button>
-            <button class="light minimize" type="button" data-window="minimize" aria-label="最小化"></button>
-            <button class="light maximize" type="button" data-window="maximize" aria-label="最大化"></button>
+            <button class="light minimize" type="button" data-window="minimize" aria-label="最小化" title="最小化">−</button>
+            <button class="light maximize" type="button" data-window="maximize" aria-label="最大化" title="最大化">□</button>
+            <button class="light close" type="button" data-window="close" aria-label="关闭" title="关闭">×</button>
           </div>
         </div>
         <section class="panel" data-panel hidden>

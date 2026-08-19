@@ -10,7 +10,7 @@
 
 ## 强制桌面体验
 
-- 使用无系统装饰的原生窗口；窗口控制必须由 `assets/window-chrome.js` 提供并保持在右上角。
+- 使用无系统装饰的原生窗口；窗口控制必须由 `assets/window-chrome.js` 提供并保持在右上角，使用 Windows 语义清晰的 `— / □ / ×`，不得改成苹果交通灯。
 - 「获取 API Key」必须通过 Rust IPC 调用本机默认浏览器打开 DeepSeek API Key 页面，不得嵌入第三方登录页。
 - UI/桌面壳改动必须同时检查 Windows x64、macOS arm64、任务栏/Dock 图标和安装包。
 - 修改角色或图标后，必须运行 `python scripts/generate-icons.py`，禁止只替换单个尺寸。
