@@ -17,6 +17,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: pnpm --dir frontend/dsh-web-ui install --frozen-lockfile --config.minimumReleaseAge=0
+      - run: pnpm --dir frontend/dsh-web-ui build
       - run: python scripts/verify-desktop-contract.py
 
   rust:
