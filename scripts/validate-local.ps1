@@ -52,6 +52,8 @@ function Find-LocalService {
 $root = Split-Path -Parent $PSScriptRoot
 $binary = Join-Path $root "target\release\dsh-desktop.exe"
 $installedBinary = Join-Path $InstallDir "bin\dsh-desktop.exe"
+$frontend = Join-Path $root "frontend\dsh-web-ui"
+$installedFrontend = Join-Path $InstallDir "frontend\dsh-web-ui"
 $process = $null
 $previousModel = $env:DEEPSEEK_MODEL
 $previousBaseUrl = $env:DEEPSEEK_BASE_URL
@@ -62,9 +64,16 @@ try {
     Write-Host "Building release binary…"
     cargo build --release --locked --manifest-path (Join-Path $root "Cargo.toml")
     if (-not (Test-Path -LiteralPath $binary)) { throw "未找到 release binary：$binary" }
+    if (-not (Test-Path -LiteralPath (Join-Path $frontend "packages\dsh-web-ui-all\lib\index.js"))) {
+        throw "未找到内置 frontend 构建产物；请先在 frontend/dsh-web-ui 执行 pnpm install 与 pnpm build"
+    }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installedBinary) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installedFrontend) | Out-Null
     Copy-Item -LiteralPath $binary -Destination $installedBinary -Force
+    $copyArgs = @($frontend, $installedFrontend, "/E", "/XD", "node_modules", ".pnpm-store", "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
+    robocopy @copyArgs | Out-Null
+    if ($LASTEXITCODE -gt 7) { throw "复制内置 frontend 失败：$LASTEXITCODE" }
     Write-Host "Local install: $installedBinary" -ForegroundColor Green
 
     Invoke-DeepSeekSmokeTest
@@ -91,7 +100,7 @@ try {
     Write-Host "Full local validation: PASS" -ForegroundColor Green
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        taskkill.exe /PID $process.Id /T /F | Out-Null
         $null = $process.WaitForExit(5000)
     }
     if ($null -eq $previousModel) { Remove-Item Env:DEEPSEEK_MODEL -ErrorAction SilentlyContinue } else { $env:DEEPSEEK_MODEL = $previousModel }

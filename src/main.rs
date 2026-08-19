@@ -2,7 +2,7 @@
 
 use std::{
     env,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -10,6 +10,9 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use directories::ProjectDirs;
@@ -26,8 +29,41 @@ use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder};
 const APP_NAME: &str = "DSH Desktop";
 const SERVICE_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 3080;
-const WEB_UI_PLUGIN: &str = "@linxin666/dsh-web-ui-all@latest";
+const DEFAULT_MODEL: &str = "deepseek-v4-flash";
+const DEFAULT_NPM_REGISTRY: &str = "https://registry.npmmirror.com";
+const HARNESS_PACKAGE: &str = "@deepseek-ai/dsh@latest";
 const PNPM_BUILD_PACKAGES: &[&str] = &["cpu-features", "node-pty", "ssh2"];
+const LOCAL_UI_RUNTIME_DEPS: &[&str] = &[
+    "@xterm/addon-fit@^0.11.0",
+    "@xterm/xterm@^6.0.0",
+    "cloudflared@^0.7.3",
+    "clsx@^2.1.1",
+    "dsh-better-sidebar@0.13.0",
+    "lightningcss@^1.32.0",
+    "qrcode.react@^4.2.0",
+    "schemastery@^3.18.0",
+    "ssh2@^1.17.0",
+    "ws@^8.18.0",
+    "yaml@^2.8.2",
+    "zod@^4.4.3",
+];
+const LOCAL_UI_PACKAGE_PATHS: &[&str] = &[
+    "packages/dsh-aionui-panel",
+    "packages/dsh-community-plugins",
+    "packages/dsh-git-graph",
+    "packages/dsh-liangshen",
+    "packages/dsh-pet",
+    "packages/dsh-plugin-manager",
+    "packages/dsh-remote-web-ui",
+    "packages/dsh-skill-explorer",
+    "packages/dsh-skins",
+    "packages/dsh-ssh",
+    "packages/dsh-task-board",
+    "packages/dsh-tool-describe-image",
+    "packages/dsh-web-ui-settings",
+    "packages/skins/skin-center",
+    "packages/dsh-web-ui-all",
+];
 const KEYRING_SERVICE: &str = "dsh-desktop";
 const KEYRING_USER: &str = "deepseek-api-key";
 const START_HTML: &str = include_str!("../assets/start.html");
@@ -37,9 +73,12 @@ const PET_MODE_SCRIPT: &str = include_str!("../assets/pet-mode.js");
 const PET_SPRITE: &[u8] = include_bytes!("../assets/pet/maid-sprite-final.png");
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/icon-master.png");
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Debug)]
 enum UserEvent {
-    SaveApiKey(String),
+    SaveApiKey { key: String, model: String },
     ResetApiKey,
     SetPetVisibility(bool),
     WindowMinimize,
@@ -56,6 +95,7 @@ struct IpcMessage {
     #[serde(rename = "type")]
     kind: String,
     key: Option<String>,
+    model: Option<String>,
     hidden: Option<bool>,
 }
 
@@ -84,18 +124,21 @@ impl AppState {
         }
     }
 
-    fn start_runtime(&mut self, key: String) {
+    fn start_runtime(&mut self, key: String, model: String) {
         if self.started {
             return;
         }
         self.started = true;
-        self.set_status("正在准备 DeepSeek 环境…", "正在检查 DSH 与 Web UI 插件");
+        self.set_status("正在准备 DeepSeek 环境…", "正在加载本机前端与官方 Harness");
 
         let proxy = self.proxy.clone();
         let data_dir = self.data_dir.clone();
         let workspace = configured_workspace();
+        let frontend_dir = configured_frontend_dir();
         thread::spawn(move || {
-            if let Err(error) = start_runtime_worker(proxy.clone(), data_dir, workspace, key) {
+            if let Err(error) =
+                start_runtime_worker(proxy.clone(), data_dir, workspace, frontend_dir, key, model)
+            {
                 let _ = proxy.send_event(UserEvent::StartupFailed(error));
             }
         });
@@ -119,6 +162,7 @@ impl AppState {
 
     fn stop_child(&mut self) {
         if let Some(mut child) = self.child.take() {
+            terminate_process_tree(child.id());
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -144,18 +188,27 @@ impl ApplicationHandler<UserEvent> for AppState {
         let has_key = load_api_key().is_some();
         let proxy = self.proxy.clone();
         let pet_script = pet_mode_script(self.pet_hidden);
+        let model_script = format!(
+            "window.__dshDefaultModel = {};",
+            serde_json::to_string(&load_model(&self.data_dir))
+                .unwrap_or_else(|_| "null".to_string())
+        );
         let builder = WebViewBuilder::new()
             .with_html(START_HTML)
             .with_initialization_script(WINDOW_CHROME_SCRIPT)
             .with_initialization_script(GOAL_MODE_SCRIPT)
             .with_initialization_script(&pet_script)
+            .with_initialization_script(&model_script)
             .with_ipc_handler(move |request| {
                 let parsed = serde_json::from_str::<IpcMessage>(request.body());
                 let Ok(message) = parsed else { return };
                 match message.kind.as_str() {
                     "save_key" => {
                         if let Some(key) = message.key {
-                            let _ = proxy.send_event(UserEvent::SaveApiKey(key));
+                            let _ = proxy.send_event(UserEvent::SaveApiKey {
+                                key,
+                                model: message.model.unwrap_or_default(),
+                            });
                         }
                     }
                     "reset_key" => {
@@ -209,16 +262,28 @@ impl ApplicationHandler<UserEvent> for AppState {
 
         if has_key {
             if let Some(key) = load_api_key() {
-                self.start_runtime(key);
+                self.start_runtime(key, load_model(&self.data_dir));
             }
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::SaveApiKey(raw_key) => {
+            UserEvent::SaveApiKey {
+                key: raw_key,
+                model,
+            } => {
                 let key = raw_key.trim().to_string();
                 if let Err(error) = validate_api_key(&key) {
+                    self.show_error(&error);
+                    return;
+                }
+                let model = if model.trim().is_empty() {
+                    load_model(&self.data_dir)
+                } else {
+                    model.trim().to_string()
+                };
+                if let Err(error) = validate_model(&model) {
                     self.show_error(&error);
                     return;
                 }
@@ -226,7 +291,11 @@ impl ApplicationHandler<UserEvent> for AppState {
                     self.show_error(&format!("无法保存 API Key：{error}"));
                     return;
                 }
-                self.start_runtime(key);
+                if let Err(error) = save_model(&self.data_dir, &model) {
+                    self.show_error(&format!("无法保存模型选择：{error}"));
+                    return;
+                }
+                self.start_runtime(key, model);
             }
             UserEvent::ResetApiKey => {
                 let _ = delete_api_key();
@@ -268,7 +337,9 @@ impl ApplicationHandler<UserEvent> for AppState {
                 self.current_url = Some(url.clone());
                 self.set_status("已连接 DeepSeek", "正在载入工作台");
                 if let Some(webview) = &self.webview {
-                    let _ = webview.load_url(&url);
+                    if let Err(error) = webview.load_url(&url) {
+                        self.show_error(&format!("载入工作台失败：{error}"));
+                    }
                 }
             }
             UserEvent::StartupFailed(error) => self.show_error(&error),
@@ -302,6 +373,7 @@ impl ApplicationHandler<UserEvent> for AppState {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(child) = self.child.as_mut() {
             if let Ok(Some(status)) = child.try_wait() {
+                terminate_process_tree(child.id());
                 self.child = None;
                 self.show_error(&format!("DSH 服务已退出（状态码：{}）", status));
             }
@@ -413,6 +485,39 @@ fn validate_api_key(key: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn load_model(data_dir: &Path) -> String {
+    if let Ok(model) = env::var("DEEPSEEK_MODEL") {
+        if validate_model(&model).is_ok() {
+            return model.trim().to_string();
+        }
+    }
+    fs::read_to_string(data_dir.join("selected-model"))
+        .ok()
+        .map(|model| model.trim().to_string())
+        .filter(|model| validate_model(model).is_ok())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+fn save_model(data_dir: &Path, model: &str) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+    fs::write(data_dir.join("selected-model"), model.trim()).map_err(|error| error.to_string())
+}
+
+fn validate_model(model: &str) -> Result<(), String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("请选择 DeepSeek 模型".to_string());
+    }
+    if model.len() > 128
+        || model
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err("模型名称格式异常".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct Runner {
     program: String,
@@ -427,6 +532,13 @@ fn resolve_runner() -> Result<Runner, String> {
                 base_args: Vec::new(),
             });
         }
+    }
+
+    if let Some(npx) = bundled_npx() {
+        return Ok(Runner {
+            program: npx.to_string_lossy().to_string(),
+            base_args: vec!["--yes".to_string(), HARNESS_PACKAGE.to_string()],
+        });
     }
 
     #[cfg(target_os = "windows")]
@@ -449,10 +561,10 @@ fn resolve_runner() -> Result<Runner, String> {
     if command_available(npx) {
         return Ok(Runner {
             program: npx.to_string(),
-            base_args: vec!["--yes".to_string(), "@deepseek-ai/dsh".to_string()],
+            base_args: vec!["--yes".to_string(), HARNESS_PACKAGE.to_string()],
         });
     }
-    Err("未找到 dsh 或 npx。请先安装 Node.js 22+，或设置 DSH_DESKTOP_DSH_BIN".to_string())
+    Err("内置运行时未就绪。请重新运行安装器，或设置 DSH_DESKTOP_DSH_BIN".to_string())
 }
 
 fn command_available(program: &str) -> bool {
@@ -462,6 +574,108 @@ fn command_available(program: &str) -> bool {
     env::var_os("PATH")
         .map(|paths| env::split_paths(&paths).any(|path| path.join(program).is_file()))
         .unwrap_or(false)
+}
+
+fn bundled_runtime_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(path) = env::var_os("DSH_DESKTOP_NODE_BIN") {
+        if let Some(parent) = PathBuf::from(path).parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    if let Ok(executable) = env::current_exe() {
+        if let Some(bin_dir) = executable.parent() {
+            if let Some(install_dir) = bin_dir.parent() {
+                roots.push(install_dir.join("runtime").join("node"));
+            }
+            if let Some(contents_dir) = bin_dir.parent() {
+                roots.push(contents_dir.join("Resources").join("runtime").join("node"));
+            }
+        }
+    }
+    if let Ok(current_dir) = env::current_dir() {
+        roots.push(current_dir.join("runtime").join("node"));
+    }
+    roots
+}
+
+fn bundled_runtime_path(name: &str) -> Option<PathBuf> {
+    for root in bundled_runtime_roots() {
+        #[cfg(target_os = "windows")]
+        let candidates = [root.join(format!("{name}.cmd")), root.join(name)];
+        #[cfg(not(target_os = "windows"))]
+        let candidates = [root.join("bin").join(name)];
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn bundled_npx() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("DSH_DESKTOP_NODE_BIN") {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    bundled_runtime_path("npx")
+}
+
+fn bundled_corepack() -> Option<PathBuf> {
+    bundled_runtime_path("corepack")
+}
+
+fn locate_package_manager() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let names = ["pnpm.cmd", "pnpm.exe", "pnpm"];
+    #[cfg(not(target_os = "windows"))]
+    let names = ["pnpm"];
+
+    for root in bundled_runtime_roots() {
+        for name in names {
+            let candidate = root.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        for name in names {
+            let candidate = root.join("bin").join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for name in names {
+        if let Some(paths) = env::var_os("PATH") {
+            if let Some(path) = env::split_paths(&paths)
+                .map(|path| path.join(name))
+                .find(|path| path.is_file())
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn prepend_runtime_path(command: &mut Command) {
+    let mut paths = bundled_runtime_roots();
+    #[cfg(not(target_os = "windows"))]
+    paths.extend(
+        bundled_runtime_roots()
+            .into_iter()
+            .map(|root| root.join("bin")),
+    );
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    if let Ok(joined) = env::join_paths(paths) {
+        command.env("PATH", joined);
+    }
 }
 
 fn choose_port() -> Result<u16, String> {
@@ -483,41 +697,30 @@ fn start_runtime_worker(
     proxy: EventLoopProxy<UserEvent>,
     data_dir: PathBuf,
     workspace: PathBuf,
+    frontend_dir: PathBuf,
     key: String,
+    model: String,
 ) -> Result<(), String> {
     validate_api_key(&key)?;
+    validate_model(&model)?;
     fs::create_dir_all(&data_dir).map_err(|error| format!("创建数据目录失败：{error}"))?;
     let runner = resolve_runner()?;
     let npm_registry = env::var("DSH_NPM_REGISTRY")
         .ok()
         .or_else(|| fs::read_to_string(data_dir.join("npm-registry")).ok())
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some(DEFAULT_NPM_REGISTRY.to_string()));
 
-    if !data_dir.join("web-ui-installed").is_file() {
-        let plugin_args = ["plugin", "--profile", "web", "add", WEB_UI_PLUGIN];
-        let mut installed = false;
-        for attempt in 0..2 {
-            let mut install = command_for(&runner, &plugin_args);
-            configure_command(&mut install, &workspace, &key, npm_registry.as_deref());
-            let output = install
-                .output()
-                .map_err(|error| format!("安装 Web UI 插件失败：{error}"))?;
-            log_bytes(&data_dir, "plugin", &output.stdout, &key);
-            log_bytes(&data_dir, "plugin", &output.stderr, &key);
-            if output.status.success() {
-                installed = true;
-                break;
-            }
-            if attempt == 0 && approve_dsh_build_scripts(&data_dir, &key) {
-                continue;
-            }
-        }
-        if !installed {
-            return Err("Web UI 插件安装失败。可设置 DSH_NPM_REGISTRY 后重试".to_string());
-        }
-        File::create(data_dir.join("web-ui-installed")).map_err(|error| error.to_string())?;
+    if !local_frontend_is_installed(&data_dir, &frontend_dir) {
+        install_local_frontend(&data_dir, &frontend_dir, &key, npm_registry.as_deref())?;
+        fs::write(
+            data_dir.join("web-ui-local-source"),
+            frontend_dir.to_string_lossy().as_bytes(),
+        )
+        .map_err(|error| error.to_string())?;
     }
+    normalize_local_profile_bundles()?;
 
     let port = choose_port()?;
     let port_text = port.to_string();
@@ -525,7 +728,13 @@ fn start_runtime_worker(
         &runner,
         &["web", "--host", SERVICE_HOST, "--port", &port_text],
     );
-    configure_command(&mut command, &workspace, &key, npm_registry.as_deref());
+    configure_command(
+        &mut command,
+        &workspace,
+        &key,
+        &model,
+        npm_registry.as_deref(),
+    );
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
@@ -552,10 +761,179 @@ fn start_runtime_worker(
     }
 }
 
+fn local_frontend_is_installed(data_dir: &Path, frontend_dir: &Path) -> bool {
+    let marker = data_dir.join("web-ui-local-source");
+    let Ok(installed) = fs::read_to_string(marker) else {
+        return false;
+    };
+    installed.trim() == frontend_dir.to_string_lossy()
+}
+
+fn normalize_local_profile_bundles() -> Result<(), String> {
+    let profile_dir =
+        dsh_profile_dir().ok_or_else(|| "无法定位 DSH web profile 目录".to_string())?;
+    let package_path = profile_dir.join("package.json");
+    let source = fs::read_to_string(&package_path)
+        .map_err(|error| format!("读取 DSH profile 配置失败：{error}"))?;
+    let mut document: serde_json::Value = serde_json::from_str(&source)
+        .map_err(|error| format!("解析 DSH profile 配置失败：{error}"))?;
+    document["name"] = serde_json::json!("dsh-profile-web");
+    document["private"] = serde_json::json!(true);
+    document["dsh"]["profile"]["bundles"] = serde_json::json!([
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@linxin666/dsh-web-ui-all"
+    ]);
+    let rendered = serde_json::to_string_pretty(&document)
+        .map_err(|error| format!("写入 DSH profile 配置失败：{error}"))?;
+    fs::write(package_path, format!("{rendered}\n"))
+        .map_err(|error| format!("写入 DSH profile 配置失败：{error}"))?;
+
+    let empty_patch = "[]\n";
+    for name in ["cordis.yml", "cordis.patch.yml"] {
+        let path = profile_dir.join(name);
+        if !path.is_file() {
+            fs::write(path, empty_patch)
+                .map_err(|error| format!("创建 DSH profile 文件失败：{error}"))?;
+        }
+    }
+    let workspace_path = profile_dir.join("pnpm-workspace.yaml");
+    if !workspace_path.is_file() {
+        fs::write(
+            workspace_path,
+            "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n",
+        )
+        .map_err(|error| format!("创建 DSH profile pnpm 配置失败：{error}"))?;
+    }
+    Ok(())
+}
+
+fn install_local_frontend(
+    data_dir: &Path,
+    frontend_dir: &Path,
+    key: &str,
+    npm_registry: Option<&str>,
+) -> Result<(), String> {
+    let package_dirs = local_frontend_package_dirs(frontend_dir)?;
+    let profile_dir =
+        dsh_profile_dir().ok_or_else(|| "无法定位 DSH web profile 目录".to_string())?;
+    fs::create_dir_all(&profile_dir).map_err(|error| format!("创建 DSH profile 失败：{error}"))?;
+    let workspace_path = profile_dir.join("pnpm-workspace.yaml");
+    if !workspace_path.is_file() {
+        fs::write(
+            &workspace_path,
+            "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n",
+        )
+        .map_err(|error| format!("创建 DSH profile pnpm 配置失败：{error}"))?;
+    }
+    ensure_package_manager(data_dir, key, npm_registry)?;
+
+    let mut command = package_manager_command()
+        .ok_or_else(|| "未找到 pnpm。请重新启动以自动准备内置 Corepack".to_string())?;
+    hide_console_window(&mut command);
+    command
+        .current_dir(&profile_dir)
+        .arg("--config.minimumReleaseAge=0")
+        .arg("add")
+        .arg("--save-prod");
+    for dependency in LOCAL_UI_RUNTIME_DEPS {
+        command.arg(dependency);
+    }
+    for package_dir in &package_dirs {
+        command.arg(format!("link:{}", package_dir.to_string_lossy()));
+    }
+    configure_package_manager(&mut command, npm_registry);
+    let output = command
+        .output()
+        .map_err(|error| format!("接入内置 Web UI 组件失败：{error}"))?;
+    log_bytes(data_dir, "web-ui-local", &output.stdout, key);
+    log_bytes(data_dir, "web-ui-local", &output.stderr, key);
+    if !output.status.success() {
+        return Err("内置 Web UI 组件接入失败。请检查 Node.js、pnpm 或镜像配置".to_string());
+    }
+    let _ = approve_dsh_build_scripts(data_dir, key);
+    normalize_local_profile_bundles()
+}
+
+fn ensure_package_manager(
+    data_dir: &Path,
+    key: &str,
+    npm_registry: Option<&str>,
+) -> Result<(), String> {
+    if locate_package_manager().is_some() {
+        return Ok(());
+    }
+    let corepack = bundled_corepack()
+        .ok_or_else(|| "内置 Node.js 未包含 Corepack，无法自动准备 pnpm".to_string())?;
+    let root = bundled_runtime_roots()
+        .into_iter()
+        .find(|path| path.is_dir())
+        .ok_or_else(|| "无法定位内置 Node.js 目录".to_string())?;
+    #[cfg(target_os = "windows")]
+    let install_dir = root.clone();
+    #[cfg(not(target_os = "windows"))]
+    let install_dir = root.join("bin");
+
+    let mut command = Command::new(corepack);
+    hide_console_window(&mut command);
+    command
+        .arg("enable")
+        .arg("--install-directory")
+        .arg(&install_dir);
+    if let Some(registry) = npm_registry {
+        command.env("NPM_CONFIG_REGISTRY", registry);
+        command.env("npm_config_registry", registry);
+    }
+    prepend_runtime_path(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("启用内置 pnpm 失败：{error}"))?;
+    log_bytes(data_dir, "corepack", &output.stdout, key);
+    log_bytes(data_dir, "corepack", &output.stderr, key);
+    if output.status.success() && locate_package_manager().is_some() {
+        return Ok(());
+    }
+    Err("无法自动准备 pnpm。请检查网络或设置 DSH_NPM_REGISTRY 后重试".to_string())
+}
+
+fn local_frontend_package_dirs(frontend_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut packages = Vec::with_capacity(LOCAL_UI_PACKAGE_PATHS.len());
+    for relative in LOCAL_UI_PACKAGE_PATHS {
+        let path = frontend_dir.join(relative);
+        let has_runtime_entry = path.join("lib/index.js").is_file();
+        let has_bundle_patch = path.join("cordis.patch.yml").is_file();
+        if !path.join("package.json").is_file() || (!has_runtime_entry && !has_bundle_patch) {
+            return Err(format!(
+                "内置 Web UI 不完整：缺少 {}（发布包必须包含 frontend/dsh-web-ui）",
+                path.display()
+            ));
+        }
+        packages.push(path);
+    }
+    Ok(packages)
+}
+
 fn command_for(runner: &Runner, args: &[&str]) -> Command {
     let mut command = Command::new(&runner.program);
     command.args(&runner.base_args).args(args);
+    hide_console_window(&mut command);
     command
+}
+
+fn hide_console_window(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+fn terminate_process_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("taskkill.exe");
+        hide_console_window(&mut command);
+        let _ = command
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
 }
 
 fn approve_dsh_build_scripts(data_dir: &Path, key: &str) -> bool {
@@ -565,17 +943,15 @@ fn approve_dsh_build_scripts(data_dir: &Path, key: &str) -> bool {
     if fs::create_dir_all(&profile_dir).is_err() {
         return false;
     }
-    #[cfg(target_os = "windows")]
-    let pnpm = "pnpm.cmd";
-    #[cfg(not(target_os = "windows"))]
-    let pnpm = "pnpm";
-    if !command_available(pnpm) {
+    let Some(pnpm) = package_manager_command() else {
         return false;
-    }
+    };
 
-    let mut approve = Command::new(pnpm);
+    let mut approve = pnpm;
+    hide_console_window(&mut approve);
     approve
         .current_dir(&profile_dir)
+        .arg("--config.minimumReleaseAge=0")
         .arg("approve-builds")
         .args(PNPM_BUILD_PACKAGES);
     let Ok(output) = approve.output() else {
@@ -587,9 +963,14 @@ fn approve_dsh_build_scripts(data_dir: &Path, key: &str) -> bool {
         return false;
     }
 
-    let mut rebuild = Command::new(pnpm);
+    let Some(pnpm) = package_manager_command() else {
+        return true;
+    };
+    let mut rebuild = pnpm;
+    hide_console_window(&mut rebuild);
     rebuild
         .current_dir(&profile_dir)
+        .arg("--config.minimumReleaseAge=0")
         .arg("rebuild")
         .args(PNPM_BUILD_PACKAGES);
     if let Ok(output) = rebuild.output() {
@@ -597,6 +978,27 @@ fn approve_dsh_build_scripts(data_dir: &Path, key: &str) -> bool {
         log_bytes(data_dir, "pnpm-rebuild", &output.stderr, key);
     }
     true
+}
+
+#[cfg(target_os = "windows")]
+fn package_manager_command() -> Option<Command> {
+    locate_package_manager().map(Command::new)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn package_manager_command() -> Option<Command> {
+    locate_package_manager().map(Command::new)
+}
+
+fn configure_package_manager(command: &mut Command, npm_registry: Option<&str>) {
+    prepend_runtime_path(command);
+    command.env("npm_config_minimum_release_age", "0");
+    command.env("NPM_CONFIG_MINIMUM_RELEASE_AGE", "0");
+    command.env("pnpm_config_minimum_release_age", "0");
+    if let Some(registry) = npm_registry {
+        command.env("NPM_CONFIG_REGISTRY", registry);
+        command.env("npm_config_registry", registry);
+    }
 }
 
 fn dsh_profile_dir() -> Option<PathBuf> {
@@ -613,22 +1015,51 @@ fn dsh_profile_dir() -> Option<PathBuf> {
         })
 }
 
+fn configured_frontend_dir() -> PathBuf {
+    if let Some(path) = env::var_os("DSH_DESKTOP_FRONTEND_DIR") {
+        return PathBuf::from(path);
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(executable) = env::current_exe() {
+        if let Some(bin_dir) = executable.parent() {
+            if let Some(install_dir) = bin_dir.parent() {
+                candidates.push(install_dir.join("frontend").join("dsh-web-ui"));
+            }
+            if let Some(contents_dir) = bin_dir.parent() {
+                candidates.push(
+                    contents_dir
+                        .join("Resources")
+                        .join("frontend")
+                        .join("dsh-web-ui"),
+                );
+            }
+        }
+    }
+    if let Ok(current_dir) = env::current_dir() {
+        candidates.push(current_dir.join("frontend").join("dsh-web-ui"));
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| PathBuf::from("frontend/dsh-web-ui"))
+}
+
 fn configure_command(
     command: &mut Command,
     workspace: &Path,
     key: &str,
+    model: &str,
     npm_registry: Option<&str>,
 ) {
     command.current_dir(workspace);
+    prepend_runtime_path(command);
     command.env("DEEPSEEK_API_KEY", key);
     command.env(
         "DEEPSEEK_BASE_URL",
         env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string()),
     );
-    command.env(
-        "DEEPSEEK_MODEL",
-        env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string()),
-    );
+    command.env("DEEPSEEK_MODEL", model);
     if let Some(registry) = npm_registry {
         command.env("NPM_CONFIG_REGISTRY", registry);
         command.env("npm_config_registry", registry);

@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: pnpm --dir frontend/dsh-web-ui install --frozen-lockfile --config.minimumReleaseAge=0
+      - run: pnpm --dir frontend/dsh-web-ui build
       - run: python -m pip install pillow
       - run: python scripts/generate-icons.py
       - uses: dtolnay/rust-toolchain@stable
@@ -25,7 +31,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/dsh-desktop.exe dist/dsh-desktop.exe
-          Compress-Archive -Path dist/dsh-desktop.exe -DestinationPath dsh-desktop-windows-x64.zip -Force
+          $copyArgs = @("frontend", "dist/frontend", "/E", "/XD", "node_modules", ".pnpm-store", "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
+          robocopy @copyArgs | Out-Null
+          if ($LASTEXITCODE -gt 7) { throw "复制内置 frontend 失败：$LASTEXITCODE" }
+          $nodeVersion = "v22.19.0"
+          $nodeArchive = Join-Path $env:RUNNER_TEMP "node-$nodeVersion-win-x64.zip"
+          Invoke-WebRequest "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip" -OutFile $nodeArchive
+          Expand-Archive -LiteralPath $nodeArchive -DestinationPath $env:RUNNER_TEMP/node-runtime -Force
+          $nodeRoot = Join-Path $env:RUNNER_TEMP "node-runtime/node-$nodeVersion-win-x64"
+          New-Item -ItemType Directory -Force dist/runtime/node | Out-Null
+          Copy-Item "$nodeRoot/*" dist/runtime/node -Recurse -Force
+          Compress-Archive -Path dist/* -DestinationPath dsh-desktop-windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -38,6 +54,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: corepack enable
+      - run: pnpm --dir frontend/dsh-web-ui install --frozen-lockfile --config.minimumReleaseAge=0
+      - run: pnpm --dir frontend/dsh-web-ui build
       - run: python3 -m pip install pillow
       - run: python3 scripts/generate-icons.py
       - uses: dtolnay/rust-toolchain@stable
@@ -48,6 +70,15 @@ jobs:
           APP="DSH Desktop.app"
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
+          mkdir -p "$APP/Contents/Resources/frontend"
+          rsync -a --exclude node_modules --exclude .pnpm-store frontend/ "$APP/Contents/Resources/frontend/"
+          NODE_VERSION="v22.19.0"
+          curl -fL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-darwin-arm64.tar.gz" -o "$RUNNER_TEMP/node-runtime.tar.gz"
+          mkdir -p "$RUNNER_TEMP/node-runtime"
+          tar -xzf "$RUNNER_TEMP/node-runtime.tar.gz" -C "$RUNNER_TEMP/node-runtime"
+          cp -R "$RUNNER_TEMP/node-runtime/node-$NODE_VERSION-darwin-arm64" "$APP/Contents/Resources/runtime-node"
+          mkdir -p "$APP/Contents/Resources/runtime"
+          mv "$APP/Contents/Resources/runtime-node" "$APP/Contents/Resources/runtime/node"
           cp target/aarch64-apple-darwin/release/dsh-desktop "$APP/Contents/MacOS/dsh-desktop"
           chmod +x "$APP/Contents/MacOS/dsh-desktop"
           iconutil -c icns packaging/macos/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"

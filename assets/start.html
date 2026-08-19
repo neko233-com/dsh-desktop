@@ -17,8 +17,9 @@
     .hero h2 { margin: 0 0 12px; font-size: 38px; line-height: 1.08; letter-spacing: -.04em; }
     .hero p { margin: 0 0 28px; color: #aab5c8; line-height: 1.65; }
     label { display: block; margin: 0 0 9px; color: #d8e0ee; font-size: 13px; font-weight: 650; }
-    input { width: 100%; padding: 15px 16px; border: 1px solid #ffffff1f; border-radius: 13px; outline: none; color: #fff; background: #060912aa; font: inherit; }
-    input:focus { border-color: #8af6e0; box-shadow: 0 0 0 4px #8af6e01c; }
+    input, select { width: 100%; padding: 15px 16px; border: 1px solid #ffffff1f; border-radius: 13px; outline: none; color: #fff; background: #060912aa; font: inherit; }
+    input:focus, select:focus { border-color: #8af6e0; box-shadow: 0 0 0 4px #8af6e01c; }
+    select { margin-top: 14px; color-scheme: dark; }
     .actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
     button { border: 0; border-radius: 12px; padding: 13px 18px; color: #071116; background: #8af6e0; font: inherit; font-weight: 750; cursor: pointer; }
     button.secondary { color: #dce5f4; background: #ffffff12; }
@@ -38,10 +39,17 @@
     <header class="brand"><div class="mark">D</div><div><div class="eyebrow">DeepSeek-first</div><h1>DSH Desktop</h1></div></header>
     <section class="hero">
       <h2>给一个 Key，开始工作。</h2>
-      <p>Rust 原生桌面壳，自动准备 DeepSeek Harness、Web UI 插件和本地工作区。API Key 只通过系统钥匙串保存，不写入项目文件。</p>
+      <p>给 Key 和模型，自动准备官方 DeepSeek Harness、本机前端和工作区。API Key 只通过系统钥匙串保存，不写入项目文件。</p>
       <form id="key-form">
         <label for="api-key">DeepSeek API Key</label>
         <input id="api-key" name="api-key" type="password" autocomplete="off" placeholder="sk-…" spellcheck="false" autofocus>
+        <label for="model">DeepSeek 模型</label>
+        <select id="model" name="model">
+          <option value="deepseek-v4-flash">DeepSeek V4 Flash（推荐）</option>
+          <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+          <option value="deepseek-chat">DeepSeek Chat</option>
+          <option value="deepseek-reasoner">DeepSeek Reasoner</option>
+        </select>
         <div class="actions"><button type="submit">连接 DeepSeek</button><button class="secondary" type="button" id="docs">获取 API Key</button></div>
       </form>
       <div id="status" class="status"><strong id="status-title"></strong><span id="status-detail"></span></div>
@@ -53,11 +61,13 @@
     const ipc = (payload) => window.ipc && window.ipc.postMessage(JSON.stringify(payload));
     const form = document.querySelector('#key-form');
     const key = document.querySelector('#api-key');
+    const model = document.querySelector('#model');
     const status = document.querySelector('#status');
     const title = document.querySelector('#status-title');
+    if (window.__dshDefaultModel) model.value = window.__dshDefaultModel;
     const detail = document.querySelector('#status-detail');
     window.__dshSetStatus = (nextTitle, nextDetail) => { status.classList.add('visible'); title.textContent = nextTitle; detail.innerHTML = `<span class="spinner"></span>${nextDetail}`; };
-    form.addEventListener('submit', (event) => { event.preventDefault(); if (key.value.trim()) { window.__dshSetStatus('正在连接…', '准备本机 DeepSeek 工作台'); ipc({ type: 'save_key', key: key.value }); key.value = ''; } });
+    form.addEventListener('submit', (event) => { event.preventDefault(); if (key.value.trim()) { window.__dshSetStatus('正在连接…', '准备本机 DeepSeek 工作台'); ipc({ type: 'save_key', key: key.value, model: model.value }); key.value = ''; } });
     document.querySelector('#docs').addEventListener('click', () => ipc({ type: 'open_docs' }));
     document.querySelector('#reset').addEventListener('click', () => ipc({ type: 'reset_key' }));
   </script>

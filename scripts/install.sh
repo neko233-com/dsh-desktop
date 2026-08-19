@@ -71,7 +71,9 @@ if [ -n "${DSH_NPM_REGISTRY:-}" ]; then
 fi
 ln -sf "$DEST/Contents/MacOS/dsh-desktop" "$BIN_DIR/dsh-desktop"
 echo "DSH Desktop 已安装：$DEST"
-if ! command -v node >/dev/null 2>&1; then
-  echo "警告：未检测到 Node.js 22+。首次启动 DSH 前请安装 Node.js，或设置 DSH_DESKTOP_DSH_BIN。" >&2
+if [ ! -x "$DEST/Contents/Resources/runtime/node/bin/node" ]; then
+  echo "警告：发布包缺少内置 Node.js 运行时，请重新下载最新安装包。" >&2
+else
+  echo "已内置 Node.js；首次启动会自动准备并更新官方 DeepSeek Harness。"
 fi
 echo "启动：open '$DEST'"
