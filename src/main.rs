@@ -920,21 +920,25 @@ fn command_for(runner: &Runner, args: &[&str]) -> Command {
     command
 }
 
+#[cfg(target_os = "windows")]
 fn hide_console_window(command: &mut Command) {
-    #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
+#[cfg(not(target_os = "windows"))]
+fn hide_console_window(_command: &mut Command) {}
+
+#[cfg(target_os = "windows")]
 fn terminate_process_tree(pid: u32) {
-    #[cfg(target_os = "windows")]
-    {
-        let mut command = Command::new("taskkill.exe");
-        hide_console_window(&mut command);
-        let _ = command
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
-    }
+    let mut command = Command::new("taskkill.exe");
+    hide_console_window(&mut command);
+    let _ = command
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
 }
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_process_tree(_pid: u32) {}
 
 fn approve_dsh_build_scripts(data_dir: &Path, key: &str) -> bool {
     let Some(profile_dir) = dsh_profile_dir() else {
