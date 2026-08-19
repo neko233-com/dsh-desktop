@@ -88,6 +88,24 @@ function Install-FromSource {
     if ($LASTEXITCODE -gt 7) { throw "复制内置 frontend 失败：$LASTEXITCODE" }
 }
 
+function Install-StartMenuShortcut([string]$Target, [string]$WorkingDirectory) {
+    $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+    $shortcut = Join-Path $programs "DSH Desktop.lnk"
+    New-Item -ItemType Directory -Force -Path $programs | Out-Null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($shortcut)
+        $link.TargetPath = $Target
+        $link.WorkingDirectory = $WorkingDirectory
+        $link.IconLocation = "$Target,0"
+        $link.Description = "DeepSeek-first DSH Desktop"
+        $link.Save()
+        [Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {
+        Write-Warning "开始菜单快捷方式创建失败：$($_.Exception.Message)"
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
 try {
     $archive = Join-Path $temp $asset
@@ -141,7 +159,9 @@ try {
         [Environment]::SetEnvironmentVariable("Path", (($pathItems + $binDir) -join ";"), "User")
     }
     $env:Path = "$binDir;$env:Path"
+    Install-StartMenuShortcut (Join-Path $binDir "dsh-desktop.exe") $InstallDir
     Write-Host "DSH Desktop 已安装：$binDir\dsh-desktop.exe" -ForegroundColor Green
+    Write-Host "开始菜单：DSH Desktop" -ForegroundColor Green
     Write-Host "已内置 Node.js 运行时；首次启动会自动准备并更新官方 DeepSeek Harness。" -ForegroundColor Green
     Write-Host "启动：dsh-desktop"
 } finally {
