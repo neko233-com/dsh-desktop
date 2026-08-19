@@ -12,6 +12,8 @@
   <string>com.neko233.dshdesktop</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon.icns</string>
   <key>CFBundleName</key>
   <string>DSH Desktop</string>
   <key>CFBundlePackageType</key>

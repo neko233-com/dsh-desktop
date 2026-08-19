@@ -70,6 +70,8 @@
       try { localStorage.setItem('dsh-desktop-pet-hidden', hidden ? '1' : '0'); } catch (_) {}
       ipc({ type: 'pet_visibility', hidden });
     };
+    window.__dshGetPetVisible = () => root.dataset.hidden !== 'true';
+    window.__dshSetPetHidden = setHidden;
     const refreshMood = () => {
       const goal = document.querySelector('[data-goal-bar]');
       const text = (goal?.textContent || '').toLowerCase();

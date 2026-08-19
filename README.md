@@ -45,6 +45,10 @@ DSH_DESKTOP_MIRROR=https://ghfast.top/ curl -fsSL https://raw.githubusercontent.
 
 内置独立绘制的蓝发女仆 Q 版宠物帧动画，不依赖网络资源：默认显示，点击角色可直接进入目标模式，悬停后可隐藏；隐藏状态由 Rust 写入系统应用数据目录，重启后保持。宠物会根据 Goal Bar 文案切换待机、专注和完成反馈。
 
+## 无边框原生窗口
+
+桌面窗口不使用 Windows 系统标题栏，右上角提供苹果式三色控制：红色关闭、黄色最小化、绿色最大化；「设置」中提供 API Key 重设和宠物显示/隐藏。设置页的「获取 API Key」会调用本机默认浏览器打开 `https://platform.deepseek.com/api_keys`。
+
 ## 开发
 
 ```sh
@@ -72,6 +76,18 @@ cargo clippy --all-targets --all-features -- -D warnings
 - DSH 子进程通过环境变量接收 Key；配置文件不保存 Key。
 - stdout/stderr 写入本地 `dsh.log` 前会脱敏。
 - 服务只绑定 `127.0.0.1`，不自动暴露局域网端口。
+
+### 本机全自动验收
+
+Token 只放在当前 PowerShell 会话，不要写入脚本：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "在当前会话临时设置"
+.\scripts\validate-local.ps1
+Remove-Item Env:DEEPSEEK_API_KEY
+```
+
+脚本会先调用指定模型（默认 `deepseek-v4-flash`），再编译并覆盖本机安装包，启动桌面端，探测本地 DSH 服务，最后自动停止测试进程。
 
 ## 架构取舍
 

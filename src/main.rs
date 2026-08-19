@@ -3,7 +3,7 @@
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -19,7 +19,7 @@ use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
-    window::{Window, WindowId},
+    window::{Icon, Window, WindowId},
 };
 use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder};
 
@@ -27,18 +27,25 @@ const APP_NAME: &str = "DSH Desktop";
 const SERVICE_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 3080;
 const WEB_UI_PLUGIN: &str = "@linxin666/dsh-web-ui-all@latest";
+const PNPM_BUILD_PACKAGES: &[&str] = &["cpu-features", "node-pty", "ssh2"];
 const KEYRING_SERVICE: &str = "dsh-desktop";
 const KEYRING_USER: &str = "deepseek-api-key";
 const START_HTML: &str = include_str!("../assets/start.html");
+const WINDOW_CHROME_SCRIPT: &str = include_str!("../assets/window-chrome.js");
 const GOAL_MODE_SCRIPT: &str = include_str!("../assets/goal-mode.js");
 const PET_MODE_SCRIPT: &str = include_str!("../assets/pet-mode.js");
 const PET_SPRITE: &[u8] = include_bytes!("../assets/pet/maid-sprite-final.png");
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/icon-master.png");
 
 #[derive(Debug)]
 enum UserEvent {
     SaveApiKey(String),
     ResetApiKey,
     SetPetVisibility(bool),
+    WindowMinimize,
+    WindowMaximize,
+    WindowClose,
+    WindowDrag,
     ProcessStarted(Child),
     ServiceReady(String),
     StartupFailed(String),
@@ -126,8 +133,10 @@ impl ApplicationHandler<UserEvent> for AppState {
 
         let attributes = Window::default_attributes()
             .with_title(APP_NAME)
+            .with_decorations(false)
             .with_inner_size(LogicalSize::new(1280_u32, 820_u32))
             .with_min_inner_size(LogicalSize::new(960_u32, 640_u32));
+        let attributes = attributes.with_window_icon(app_icon());
         let window = event_loop
             .create_window(attributes)
             .expect("create native window");
@@ -137,6 +146,7 @@ impl ApplicationHandler<UserEvent> for AppState {
         let pet_script = pet_mode_script(self.pet_hidden);
         let builder = WebViewBuilder::new()
             .with_html(START_HTML)
+            .with_initialization_script(WINDOW_CHROME_SCRIPT)
             .with_initialization_script(GOAL_MODE_SCRIPT)
             .with_initialization_script(&pet_script)
             .with_ipc_handler(move |request| {
@@ -155,6 +165,18 @@ impl ApplicationHandler<UserEvent> for AppState {
                         if let Some(hidden) = message.hidden {
                             let _ = proxy.send_event(UserEvent::SetPetVisibility(hidden));
                         }
+                    }
+                    "window_minimize" => {
+                        let _ = proxy.send_event(UserEvent::WindowMinimize);
+                    }
+                    "window_maximize" => {
+                        let _ = proxy.send_event(UserEvent::WindowMaximize);
+                    }
+                    "window_close" => {
+                        let _ = proxy.send_event(UserEvent::WindowClose);
+                    }
+                    "window_drag" => {
+                        let _ = proxy.send_event(UserEvent::WindowDrag);
                     }
                     "open_docs" => {
                         let _ = open::that_detached("https://platform.deepseek.com/api_keys");
@@ -192,7 +214,7 @@ impl ApplicationHandler<UserEvent> for AppState {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::SaveApiKey(raw_key) => {
                 let key = raw_key.trim().to_string();
@@ -211,11 +233,32 @@ impl ApplicationHandler<UserEvent> for AppState {
                 self.stop_child();
                 self.started = false;
                 self.current_url = None;
-                self.set_status("连接 DeepSeek", "输入 API Key 后开始使用");
+                if let Some(webview) = &self.webview {
+                    let _ = webview.load_html(START_HTML);
+                }
             }
             UserEvent::SetPetVisibility(hidden) => {
                 self.pet_hidden = hidden;
                 let _ = save_pet_hidden(&self.data_dir, hidden);
+            }
+            UserEvent::WindowMinimize => {
+                if let Some(window) = &self.window {
+                    window.set_minimized(true);
+                }
+            }
+            UserEvent::WindowMaximize => {
+                if let Some(window) = &self.window {
+                    window.set_maximized(!window.is_maximized());
+                }
+            }
+            UserEvent::WindowClose => {
+                self.stop_child();
+                event_loop.exit();
+            }
+            UserEvent::WindowDrag => {
+                if let Some(window) = &self.window {
+                    let _ = window.drag_window();
+                }
             }
             UserEvent::ProcessStarted(child) => {
                 self.child = Some(child);
@@ -282,6 +325,22 @@ fn app_data_dir() -> PathBuf {
     ProjectDirs::from("com", "neko233", "DSH Desktop")
         .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| env::temp_dir().join("dsh-desktop"))
+}
+
+fn app_icon() -> Option<Icon> {
+    let decoder = png::Decoder::new(Cursor::new(APP_ICON_PNG));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    Icon::from_rgba(
+        buffer[..info.buffer_size()].to_vec(),
+        info.width,
+        info.height,
+    )
+    .ok()
 }
 
 fn load_pet_hidden(data_dir: &Path) -> bool {
@@ -436,17 +495,25 @@ fn start_runtime_worker(
         .filter(|value| !value.is_empty());
 
     if !data_dir.join("web-ui-installed").is_file() {
-        let mut install = command_for(
-            &runner,
-            &["plugin", "--profile", "web", "add", WEB_UI_PLUGIN],
-        );
-        configure_command(&mut install, &workspace, &key, npm_registry.as_deref());
-        let output = install
-            .output()
-            .map_err(|error| format!("安装 Web UI 插件失败：{error}"))?;
-        log_bytes(&data_dir, "plugin", &output.stdout, &key);
-        log_bytes(&data_dir, "plugin", &output.stderr, &key);
-        if !output.status.success() {
+        let plugin_args = ["plugin", "--profile", "web", "add", WEB_UI_PLUGIN];
+        let mut installed = false;
+        for attempt in 0..2 {
+            let mut install = command_for(&runner, &plugin_args);
+            configure_command(&mut install, &workspace, &key, npm_registry.as_deref());
+            let output = install
+                .output()
+                .map_err(|error| format!("安装 Web UI 插件失败：{error}"))?;
+            log_bytes(&data_dir, "plugin", &output.stdout, &key);
+            log_bytes(&data_dir, "plugin", &output.stderr, &key);
+            if output.status.success() {
+                installed = true;
+                break;
+            }
+            if attempt == 0 && approve_dsh_build_scripts(&data_dir, &key) {
+                continue;
+            }
+        }
+        if !installed {
             return Err("Web UI 插件安装失败。可设置 DSH_NPM_REGISTRY 后重试".to_string());
         }
         File::create(data_dir.join("web-ui-installed")).map_err(|error| error.to_string())?;
@@ -489,6 +556,61 @@ fn command_for(runner: &Runner, args: &[&str]) -> Command {
     let mut command = Command::new(&runner.program);
     command.args(&runner.base_args).args(args);
     command
+}
+
+fn approve_dsh_build_scripts(data_dir: &Path, key: &str) -> bool {
+    let Some(profile_dir) = dsh_profile_dir() else {
+        return false;
+    };
+    if fs::create_dir_all(&profile_dir).is_err() {
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    let pnpm = "pnpm.cmd";
+    #[cfg(not(target_os = "windows"))]
+    let pnpm = "pnpm";
+    if !command_available(pnpm) {
+        return false;
+    }
+
+    let mut approve = Command::new(pnpm);
+    approve
+        .current_dir(&profile_dir)
+        .arg("approve-builds")
+        .args(PNPM_BUILD_PACKAGES);
+    let Ok(output) = approve.output() else {
+        return false;
+    };
+    log_bytes(data_dir, "pnpm-approve", &output.stdout, key);
+    log_bytes(data_dir, "pnpm-approve", &output.stderr, key);
+    if !output.status.success() {
+        return false;
+    }
+
+    let mut rebuild = Command::new(pnpm);
+    rebuild
+        .current_dir(&profile_dir)
+        .arg("rebuild")
+        .args(PNPM_BUILD_PACKAGES);
+    if let Ok(output) = rebuild.output() {
+        log_bytes(data_dir, "pnpm-rebuild", &output.stdout, key);
+        log_bytes(data_dir, "pnpm-rebuild", &output.stderr, key);
+    }
+    true
+}
+
+fn dsh_profile_dir() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("DSH_PROFILE_DIR") {
+        return Some(PathBuf::from(path));
+    }
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".dsh")
+                .join("profiles")
+                .join("web")
+        })
 }
 
 fn configure_command(
