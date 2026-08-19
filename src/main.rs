@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::{
+    collections::HashSet,
     env,
     fs::{self, OpenOptions},
     io::{Cursor, Read, Write},
@@ -47,6 +48,7 @@ const LOCAL_UI_RUNTIME_DEPS: &[&str] = &[
     "yaml@^2.8.2",
     "zod@^4.4.3",
 ];
+const LOCAL_FRONTEND_MARKER_VERSION: &str = "runtime-deps-v2";
 const LOCAL_UI_PACKAGE_PATHS: &[&str] = &[
     "packages/dsh-aionui-panel",
     "packages/dsh-community-plugins",
@@ -175,7 +177,7 @@ impl AppState {
     panel = document.createElement('div');
     panel.id = id;
     panel.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:24px;background:rgba(8,11,18,.82);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f7f8fb;';
-    panel.innerHTML = '<div data-card style="width:min(560px,100%);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:24px;background:#111723;box-shadow:0 24px 80px rgba(0,0,0,.45)"><div style="font-size:22px;font-weight:750">工作台没有启动</div><div data-message style="margin-top:12px;color:#aab5c8;line-height:1.7;word-break:break-word"></div><div style="display:flex;gap:10px;margin-top:24px"><button data-retry style="border:0;border-radius:12px;padding:12px 18px;color:#071116;background:#8af6e0;font:inherit;font-weight:750;cursor:pointer">重新连接</button><button data-settings style="border:0;border-radius:12px;padding:12px 18px;color:#dce5f4;background:#ffffff12;font:inherit;font-weight:650;cursor:pointer">返回设置</button></div></div>';
+    panel.innerHTML = '<div data-card style="width:min(560px,100%);padding:32px;border:1px solid rgba(255,255,255,.12);border-radius:24px;background:#111723;box-shadow:0 24px 80px rgba(0,0,0,.45)"><div style="font-size:22px;font-weight:750">底层 Harness 未运行</div><div data-message style="margin-top:12px;color:#aab5c8;line-height:1.7;word-break:break-word"></div><div style="display:flex;gap:10px;margin-top:24px"><button data-retry style="border:0;border-radius:12px;padding:12px 18px;color:#071116;background:#8af6e0;font:inherit;font-weight:750;cursor:pointer">重新启动</button><button data-settings style="border:0;border-radius:12px;padding:12px 18px;color:#dce5f4;background:#ffffff12;font:inherit;font-weight:650;cursor:pointer">返回设置</button></div></div>';
     (document.body || document.documentElement).appendChild(panel);
     panel.querySelector('[data-retry]').onclick = () => window.ipc && window.ipc.postMessage(JSON.stringify({{type:'retry'}}));
     panel.querySelector('[data-settings]').onclick = () => window.ipc && window.ipc.postMessage(JSON.stringify({{type:'reset_key'}}));
@@ -378,7 +380,6 @@ impl ApplicationHandler<UserEvent> for AppState {
             }
             UserEvent::ServiceReady(url) => {
                 self.current_url = Some(url.clone());
-                self.set_status("已连接 DeepSeek", "正在载入工作台");
                 if let Some(webview) = &self.webview {
                     if let Err(error) = webview.load_url(&url) {
                         self.show_error(&format!("载入工作台失败：{error}"));
@@ -414,11 +415,27 @@ impl ApplicationHandler<UserEvent> for AppState {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(child) = self.child.as_mut() {
-            if let Ok(Some(status)) = child.try_wait() {
-                terminate_process_tree(child.id());
-                self.child = None;
-                self.show_error(&format!("DSH 服务已退出（状态码：{}）", status));
+        let exited = self.child.as_mut().and_then(|child| {
+            child
+                .try_wait()
+                .ok()
+                .flatten()
+                .map(|status| (child.id(), status))
+        });
+        if let Some((pid, status)) = exited {
+            terminate_process_tree(pid);
+            let was_ready = self.current_url.is_some();
+            self.child = None;
+            if was_ready {
+                // Harness is an implementation detail. Supervise it quietly and restart it
+                // without replacing the user's workbench with a "disconnected" screen.
+                self.started = false;
+                self.current_url = None;
+                if let Some(key) = load_api_key() {
+                    self.start_runtime(key, load_model(&self.data_dir));
+                }
+            } else {
+                self.show_error(&format!("DSH 启动失败（状态码：{}）", status));
             }
         }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
@@ -759,7 +776,7 @@ fn start_runtime_worker(
         install_local_frontend(&data_dir, &frontend_dir, &key, npm_registry.as_deref())?;
         fs::write(
             data_dir.join("web-ui-local-source"),
-            frontend_dir.to_string_lossy().as_bytes(),
+            local_frontend_marker(&frontend_dir).as_bytes(),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -809,7 +826,15 @@ fn local_frontend_is_installed(data_dir: &Path, frontend_dir: &Path) -> bool {
     let Ok(installed) = fs::read_to_string(marker) else {
         return false;
     };
-    installed.trim() == frontend_dir.to_string_lossy()
+    installed.trim() == local_frontend_marker(frontend_dir)
+}
+
+fn local_frontend_marker(frontend_dir: &Path) -> String {
+    format!(
+        "{}\n{}",
+        frontend_dir.to_string_lossy(),
+        LOCAL_FRONTEND_MARKER_VERSION
+    )
 }
 
 fn normalize_local_profile_bundles() -> Result<(), String> {
@@ -879,7 +904,7 @@ fn install_local_frontend(
         .arg("--config.minimumReleaseAge=0")
         .arg("add")
         .arg("--save-prod");
-    for dependency in LOCAL_UI_RUNTIME_DEPS {
+    for dependency in local_frontend_runtime_deps(frontend_dir)? {
         command.arg(dependency);
     }
     for package_dir in &package_dirs {
@@ -896,6 +921,40 @@ fn install_local_frontend(
     }
     let _ = approve_dsh_build_scripts(data_dir, key);
     normalize_local_profile_bundles()
+}
+
+fn local_frontend_runtime_deps(frontend_dir: &Path) -> Result<Vec<String>, String> {
+    let mut dependencies = LOCAL_UI_RUNTIME_DEPS
+        .iter()
+        .map(|dependency| (*dependency).to_string())
+        .collect::<Vec<_>>();
+    let mut official_names = HashSet::new();
+
+    for relative in LOCAL_UI_PACKAGE_PATHS {
+        let package_path = frontend_dir.join(relative).join("package.json");
+        let source = fs::read_to_string(&package_path)
+            .map_err(|error| format!("读取内置 Web UI 依赖失败：{error}"))?;
+        let document: serde_json::Value = serde_json::from_str(&source)
+            .map_err(|error| format!("解析内置 Web UI 依赖失败：{error}"))?;
+        for field in ["dependencies", "peerDependencies"] {
+            let Some(entries) = document.get(field).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            for (name, version) in entries {
+                if !name.starts_with("@deepseek-ai/") || !official_names.insert(name.clone()) {
+                    continue;
+                }
+                let Some(version) = version.as_str() else {
+                    continue;
+                };
+                if version.is_empty() || version.starts_with("workspace:") {
+                    continue;
+                }
+                dependencies.push(format!("{name}@{version}"));
+            }
+        }
+    }
+    Ok(dependencies)
 }
 
 fn ensure_package_manager(
