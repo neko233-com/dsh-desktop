@@ -50,6 +50,7 @@ def main() -> None:
         "packaging/windows/dsh-desktop.ico",
         "packaging/macos/Info.plist",
         "scripts/generate-icons.py",
+        "scripts/package-windows.ps1",
     ):
         require_file(path)
 
@@ -70,14 +71,9 @@ def main() -> None:
     require_text("scripts/validate-local.ps1", "taskkill.exe /PID $process.Id /T /F")
     require_text("assets/window-chrome.js", 'title="最小化"', 'title="最大化"', 'title="关闭"')
     require_text("assets/start.html", "api-key", "model", "deepseek-v4-flash", "save_key")
-    require_text(
-        ".github/workflows/release.yml",
-        "scripts/generate-icons.py",
-        "iconutil",
-        "AppIcon.icns",
-        "runtime/node",
-        "v24.19.0",
-    )
+    require_text("scripts/package-windows.ps1", "NodeVersion = \"v24.19.0\"", "generate-icons.py", "runtime\\node", "tar.exe")
+    if (ROOT / ".github/workflows/release.yml").exists():
+        raise SystemExit("GitHub Actions packaging must remain disabled; use scripts/package-windows.ps1")
     require_text("scripts/install.ps1", "Install-BundledNodeRuntime", "runtime\\node", "DSH_DESKTOP_MIRROR")
     require_text("scripts/install.sh", "runtime/node", "Node.js")
     require_text("README.md", "内置 Node.js 运行时", "@deepseek-ai/dsh@latest")

@@ -33,6 +33,8 @@ DSH_DESKTOP_MIRROR=https://ghfast.top/ curl -fsSL https://raw.githubusercontent.
 
 安装包已内置 Node.js 运行时（干净的 Node.js 24 LTS），用户不需要单独安装 Harness、Node.js 或 pnpm。首次启动会自动启用 pnpm，并通过 `npx --yes @deepseek-ai/dsh@latest web` 准备/更新官方 Harness；默认使用 `https://registry.npmmirror.com`，也可用 `DSH_NPM_REGISTRY` 切换官方源或其他镜像。内置 Web UI 源码和构建产物也随桌面安装包提供，不再从 `@linxin666/dsh-web-ui-all` 拉取。
 
+当前发布只提供 Windows x64，使用 `scripts/package-windows.ps1` 在本机手动打包并通过 GitHub CLI 手动上传；不使用 GitHub Actions 消耗构建额度。
+
 ## 内置前端源码
 
 `frontend/dsh-web-ui` 是参考项目的源码副本，不是 Git submodule，也不是运行时依赖。修改前端后，在该目录执行：

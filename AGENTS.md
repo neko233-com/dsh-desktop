@@ -39,4 +39,10 @@ node --check assets/goal-mode.js
 node --check assets/pet-mode.js
 ```
 
+## 发布策略
+
+- 禁止使用 GitHub Actions 打包或消耗 Actions 构建额度。
+- 当前只发布 Windows x64；必须在本机运行 `scripts/package-windows.ps1` 手动打包，再用 `gh release create` 或 `gh release upload` 手动上传。
+- macOS arm64 暂不参与本轮发布，除非用户明确要求恢复。
+
 如果产品行为需要改变这些约束，先更新本文件、验证脚本和 README，再改实现。
