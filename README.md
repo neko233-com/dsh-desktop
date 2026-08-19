@@ -41,6 +41,10 @@ DSH_DESKTOP_MIRROR=https://ghfast.top/ curl -fsSL https://raw.githubusercontent.
 - 快捷键：Windows `Ctrl+Shift+G`；macOS `Cmd+Shift+G`。
 - 输入目标并回车：沿用 DSH 原生 Goal Bar 与目标生命周期。
 
+## 桌面宠物
+
+内置独立绘制的蓝发女仆 Q 版宠物帧动画，不依赖网络资源：默认显示，点击角色可直接进入目标模式，悬停后可隐藏；隐藏状态由 Rust 写入系统应用数据目录，重启后保持。宠物会根据 Goal Bar 文案切换待机、专注和完成反馈。
+
 ## 开发
 
 ```sh
@@ -81,7 +85,8 @@ DSH Desktop
   ├─ dsh / npx discovery → install DSH Web UI plugin
   ├─ local process supervisor → 127.0.0.1:port
   ├─ native WebView → dsh-web-ui / DSH Web
-  └─ goal shortcut → native DSH `/goal` command
+  ├─ native goal shortcut → DSH `/goal` command
+  └─ local pet overlay → embedded 4-frame mascot sprite
 ```
 
 ## 许可

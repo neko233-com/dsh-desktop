@@ -11,6 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use winit::{
@@ -30,11 +31,14 @@ const KEYRING_SERVICE: &str = "dsh-desktop";
 const KEYRING_USER: &str = "deepseek-api-key";
 const START_HTML: &str = include_str!("../assets/start.html");
 const GOAL_MODE_SCRIPT: &str = include_str!("../assets/goal-mode.js");
+const PET_MODE_SCRIPT: &str = include_str!("../assets/pet-mode.js");
+const PET_SPRITE: &[u8] = include_bytes!("../assets/pet/maid-sprite-final.png");
 
 #[derive(Debug)]
 enum UserEvent {
     SaveApiKey(String),
     ResetApiKey,
+    SetPetVisibility(bool),
     ProcessStarted(Child),
     ServiceReady(String),
     StartupFailed(String),
@@ -45,6 +49,7 @@ struct IpcMessage {
     #[serde(rename = "type")]
     kind: String,
     key: Option<String>,
+    hidden: Option<bool>,
 }
 
 struct AppState {
@@ -55,6 +60,7 @@ struct AppState {
     data_dir: PathBuf,
     current_url: Option<String>,
     started: bool,
+    pet_hidden: bool,
 }
 
 impl AppState {
@@ -67,6 +73,7 @@ impl AppState {
             data_dir: app_data_dir(),
             current_url: None,
             started: false,
+            pet_hidden: load_pet_hidden(&app_data_dir()),
         }
     }
 
@@ -127,9 +134,11 @@ impl ApplicationHandler<UserEvent> for AppState {
 
         let has_key = load_api_key().is_some();
         let proxy = self.proxy.clone();
+        let pet_script = pet_mode_script(self.pet_hidden);
         let builder = WebViewBuilder::new()
             .with_html(START_HTML)
             .with_initialization_script(GOAL_MODE_SCRIPT)
+            .with_initialization_script(&pet_script)
             .with_ipc_handler(move |request| {
                 let parsed = serde_json::from_str::<IpcMessage>(request.body());
                 let Ok(message) = parsed else { return };
@@ -141,6 +150,11 @@ impl ApplicationHandler<UserEvent> for AppState {
                     }
                     "reset_key" => {
                         let _ = proxy.send_event(UserEvent::ResetApiKey);
+                    }
+                    "pet_visibility" => {
+                        if let Some(hidden) = message.hidden {
+                            let _ = proxy.send_event(UserEvent::SetPetVisibility(hidden));
+                        }
                     }
                     "open_docs" => {
                         let _ = open::that_detached("https://platform.deepseek.com/api_keys");
@@ -198,6 +212,10 @@ impl ApplicationHandler<UserEvent> for AppState {
                 self.started = false;
                 self.current_url = None;
                 self.set_status("连接 DeepSeek", "输入 API Key 后开始使用");
+            }
+            UserEvent::SetPetVisibility(hidden) => {
+                self.pet_hidden = hidden;
+                let _ = save_pet_hidden(&self.data_dir, hidden);
             }
             UserEvent::ProcessStarted(child) => {
                 self.child = Some(child);
@@ -264,6 +282,27 @@ fn app_data_dir() -> PathBuf {
     ProjectDirs::from("com", "neko233", "DSH Desktop")
         .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| env::temp_dir().join("dsh-desktop"))
+}
+
+fn load_pet_hidden(data_dir: &Path) -> bool {
+    fs::read_to_string(data_dir.join("pet-hidden"))
+        .map(|value| matches!(value.trim(), "1" | "true"))
+        .unwrap_or(false)
+}
+
+fn save_pet_hidden(data_dir: &Path, hidden: bool) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+    fs::write(data_dir.join("pet-hidden"), if hidden { "1" } else { "0" })
+        .map_err(|error| error.to_string())
+}
+
+fn pet_mode_script(hidden: bool) -> String {
+    PET_MODE_SCRIPT
+        .replace("__DSH_PET_HIDDEN__", if hidden { "true" } else { "false" })
+        .replace(
+            "__DSH_PET_SPRITE__",
+            &format!("data:image/png;base64,{}", BASE64.encode(PET_SPRITE)),
+        )
 }
 
 fn configured_workspace() -> PathBuf {

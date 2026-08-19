@@ -10,6 +10,7 @@ homepage = "https://github.com/neko233-com/dsh-desktop"
 readme = "README.md"
 
 [dependencies]
+base64 = "0.22"
 directories = "6.0"
 keyring = { version = "4.1", default-features = false, features = ["v1", "apple-native-keyring-store", "windows-native-keyring-store"] }
 open = "5.3"
